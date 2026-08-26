@@ -1,8 +1,10 @@
 # THZ Heating Curve Card
 
 A Home Assistant Lovelace card that plots the live heating curve for a
-Stiebel Eltron / Tecalor LWZ/THZ heat pump managed by the
+Stiebel Eltron / Tecalor LWZ/THZ heat pump originally managed by the
 [`lwz-thz-403`](https://github.com/m-l/lwz-thz-403) integration.
+
+<img width="496" height="463" alt="image" src="https://github.com/user-attachments/assets/157f46fc-793f-470e-a749-5141c55cfe8b" />
 
 It reads the curve parameters and live sensor values directly from your
 entities, draws both the raw and room-influence-corrected curves, marks
