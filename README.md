@@ -204,6 +204,18 @@ grid and the setpoints row; **Discard** reverts everything back to the live
 values. A setpoint typed outside its entity's `min`/`max` is clamped when
 you click Apply, same as the heating curve card.
 
+Apply sends changed fields to the device **one at a time**, not all at
+once — deliberately. A slot's Start and End are two separate `time.*`
+entities that share one physical register on the device, and writing both
+at the same moment can collide on the wire (surfacing as a generic "Failed
+to perform the action time/set_value" error). Sending them sequentially
+means Apply can take a moment longer when several fields changed together,
+but each write completes before the next starts. If Apply does still fail
+partway through, whatever was already written is cleared from the pending
+list; only the failed field and anything after it in the batch stay
+staged, so you don't lose those edits or have to redo the ones that
+succeeded.
+
 ```yaml
 type: custom:thz-schedule-card
 title: Ventilation Schedule

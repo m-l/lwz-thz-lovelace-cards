@@ -548,26 +548,45 @@ class ThzScheduleCard extends HTMLElement {
     this._applyError = "";
     this._syncApplyBar();
 
-    try {
-      await Promise.all(
-        entries.map(([id, { kind, value }]) => {
-          if (kind === "time") {
-            return this._hass.callService("time", "set_value", { entity_id: id, time: value });
-          }
+    // Sent one at a time, deliberately -- a schedule slot's Start and End
+    // are two separate time.* entities that share one physical 4-byte
+    // register on the device, and the integration's read-modify-write for
+    // each one briefly releases its device lock between the read and the
+    // write. Firing them concurrently (e.g. via Promise.all) lets two
+    // writes to the same slot race on the wire, which surfaces as a
+    // generic "unknown error" from the service call. Applying sequentially
+    // keeps at most one device write in flight at any moment.
+    let failure = null;
+    for (const [id, { kind, value }] of entries) {
+      try {
+        let appliedValue = value;
+        if (kind === "time") {
+          await this._hass.callService("time", "set_value", { entity_id: id, time: value });
+        } else {
           const meta = this._numMeta[id] || {};
           let num = Number(value);
           if (meta.min != null) num = Math.max(Number(meta.min), num);
           if (meta.max != null) num = Math.min(Number(meta.max), num);
-          return this._hass.callService("number", "set_value", { entity_id: id, value: num });
-        })
-      );
-      this._pending = {};
-    } catch (err) {
-      this._applyError = (err && err.message) || String(err);
-    } finally {
-      this._applying = false;
-      this._syncApplyBar();
+          await this._hass.callService("number", "set_value", { entity_id: id, value: num });
+          appliedValue = num.toFixed(decimalsOf(meta.step));
+        }
+        // Optimistically reflect the write immediately rather than waiting
+        // for the next poll to confirm it -- clear the pending edit and its
+        // dirty styling, and show the (possibly clamped) applied value.
+        delete this._pending[id];
+        this._liveValues[id] = appliedValue;
+        this._inputs[id].value = appliedValue;
+        this._inputs[id].classList.remove("dirty");
+        this._liveNotes[id].textContent = "";
+      } catch (err) {
+        failure = (err && err.message) || String(err);
+        break; // Stop here; this field and any not-yet-attempted ones stay pending.
+      }
     }
+
+    this._applying = false;
+    this._applyError = failure || "";
+    this._syncApplyBar();
   }
 }
 
