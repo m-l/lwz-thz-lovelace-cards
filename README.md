@@ -204,6 +204,16 @@ grid and the setpoints row; **Discard** reverts everything back to the live
 values. A setpoint typed outside its entity's `min`/`max` is clamped when
 you click Apply, same as the heating curve card.
 
+The device only stores schedule times in 15-minute steps — as soon as you
+finish typing a time, it snaps to the nearest quarter-hour (e.g. 14:37
+becomes 14:30, 14:38 becomes 14:45) so the field always shows what will
+actually be sent, not something the device would silently round away.
+Finishing one field also moves focus straight into the next one in reading
+order — the other half of the same slot, then the next slot, then the next
+day — skipping any disabled ones, so filling in a whole week doesn't need
+a mouse click between every field. Editing a field you've already filled
+in doesn't jump you away from it — only finishing a *fresh* field does.
+
 Apply sends changed fields to the device **one at a time**, not all at
 once — deliberately. A slot's Start and End are two separate `time.*`
 entities that share one physical register on the device, and the

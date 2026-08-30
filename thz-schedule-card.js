@@ -26,6 +26,13 @@
 // other. This goes through a dedicated `thz.clear_value` service rather
 // than `time.set_value`, since Home Assistant's built-in service has no
 // way to represent "no time" -- see README.
+//
+// The device only stores times as 15-minute increments, so a typed time is
+// snapped to the nearest quarter-hour as soon as it's complete (see
+// snapToQuarterHour()). Finishing one time field also moves focus straight
+// to the next one in reading order (this slot's other half, then the next
+// slot, then the next day), so filling in a whole week doesn't need a
+// mouse click between every field.
 
 const DAY_DEFS = [
   { key: "mo", label: "Mon" },
@@ -97,6 +104,25 @@ function fmtTimeState(stateObj) {
   return s.slice(0, 5);
 }
 
+function snapToQuarterHour(hhmm) {
+  // The device only stores schedule/time values as 15-minute "quarters"
+  // since midnight (see time_to_quarters() in the integration's time.py) --
+  // any other minute value gets silently floored on write. Round to the
+  // NEAREST quarter here instead, so what you see in the field is what
+  // actually gets stored, and 23:53 rounds up to 00:00 (next day) rather
+  // than surprising you by rounding down to 23:45.
+  const [hStr, mStr] = hhmm.split(":");
+  const h = Number(hStr);
+  const m = Number(mStr);
+  let snappedMin = Math.round(m / 15) * 15;
+  let snappedHour = h;
+  if (snappedMin === 60) {
+    snappedMin = 0;
+    snappedHour = (h + 1) % 24;
+  }
+  return `${String(snappedHour).padStart(2, "0")}:${String(snappedMin).padStart(2, "0")}`;
+}
+
 function decimalsOf(step) {
   const s = String(step ?? "1");
   const i = s.indexOf(".");
@@ -164,6 +190,10 @@ class ThzScheduleCard extends HTMLElement {
         }
       }
     }
+    // Table reading order (day by day, slot by slot, start then end) --
+    // used to auto-advance focus to "the next time field" after finishing one.
+    this._timeFieldOrder = Object.keys(this._timeMeta);
+    this._fieldWasComplete = {};
 
     // ---- setpoint fields ----
     // Config-level `entities` overrides only apply to the family named in
@@ -256,7 +286,7 @@ class ThzScheduleCard extends HTMLElement {
           cells += `
             <td class="timecell" data-entity="${id}">
               <div class="time-input-row">
-                <input type="time" data-entity="${id}" data-kind="time"
+                <input type="time" data-entity="${id}" data-kind="time" step="900"
                        aria-label="${d.label} slot ${s + 1} ${part}" />
                 <button type="button" class="clear-btn" data-entity="${id}"
                         title="Clear to unset" aria-label="Clear ${d.label} slot ${s + 1} ${part}">✕</button>
@@ -389,7 +419,9 @@ class ThzScheduleCard extends HTMLElement {
           later than its end time (e.g. 20:00&nbsp;&rarr;&nbsp;02:00) to span midnight --
           supported natively by the device. Typing a value only stages the change; click
           Apply to send it. Use the <b>✕</b> next to a time field to clear that whole
-          slot (both Start and End) back to "unset" instead of typing a time.
+          slot (both Start and End) back to "unset" instead of typing a time. The device
+          only stores 15-minute steps, so a typed time snaps to the nearest quarter-hour;
+          finishing one field jumps you straight into the next.
         </div>
         <div class="missing-banner" style="display:none;"></div>
         <div class="setpoints">${setpointCells}</div>
@@ -485,6 +517,7 @@ class ThzScheduleCard extends HTMLElement {
         this._liveValues[id] = "";
         if (!pending) input.value = "";
         if (this._clearBtns[id]) this._clearBtns[id].disabled = true;
+        if (meta.kind === "time") this._fieldWasComplete[id] = false;
         continue;
       }
       input.disabled = false;
@@ -521,6 +554,12 @@ class ThzScheduleCard extends HTMLElement {
           this._clearBtns[id].classList.toggle("dirty", pending.kind === "time-clear");
         }
       }
+      if (meta.kind === "time") {
+        // Keeps the auto-advance-on-completion logic in _onFieldInput
+        // accurate about whether the field was already showing a complete
+        // time before the user's latest keystroke.
+        this._fieldWasComplete[id] = input.value !== "";
+      }
     }
 
     if (missing > 0) {
@@ -542,7 +581,29 @@ class ThzScheduleCard extends HTMLElement {
 
   _onFieldInput(id, ev) {
     const kind = this._fields[id].kind;
-    const value = ev.target.value; // "" or "HH:MM" (time) / numeric string (number)
+    let value = ev.target.value; // "" or "HH:MM" (time) / numeric string (number)
+
+    // A native <input type="time">'s value is only ever "" (incomplete) or
+    // a fully-specified "HH:MM" -- never a partial one -- so this exactly
+    // captures "did the user just finish typing this field" vs. "did they
+    // just clear/start over". Used below to auto-advance focus once, right
+    // when the field transitions from incomplete to complete, rather than
+    // on every keystroke of an already-complete field (which would yank
+    // focus away while someone is just correcting a value).
+    const wasComplete = kind === "time" ? !!this._fieldWasComplete[id] : false;
+    const isComplete = value !== "";
+    if (kind === "time") this._fieldWasComplete[id] = isComplete;
+
+    if (kind === "time" && value !== "") {
+      // The device only stores 15-minute increments -- snap here so what's
+      // displayed always matches what Apply will actually send/store.
+      const snapped = snapToQuarterHour(value);
+      if (snapped !== value) {
+        value = snapped;
+        ev.target.value = snapped;
+      }
+    }
+
     if (value === this._liveValues[id]) {
       delete this._pending[id];
       ev.target.classList.remove("dirty");
@@ -558,6 +619,29 @@ class ThzScheduleCard extends HTMLElement {
       this._clearBtns[id].classList.toggle("dirty", this._pending[id]?.kind === "time-clear");
     }
     this._syncApplyBar();
+
+    if (kind === "time" && !wasComplete && isComplete) {
+      this._focusNextTimeField(id);
+    }
+  }
+
+  // Moves focus to the next time field in table reading order (this
+  // slot's other half, then the next slot, then the next day), skipping
+  // any disabled/missing ones, so filling in a whole week doesn't require
+  // clicking into every field by hand. Only fires the moment a field goes
+  // from incomplete to complete (see _onFieldInput), never while editing
+  // an already-complete one.
+  _focusNextTimeField(id) {
+    const order = this._timeFieldOrder;
+    const idx = order.indexOf(id);
+    if (idx === -1) return;
+    for (let i = idx + 1; i < order.length; i++) {
+      const nextInput = this._inputs[order[i]];
+      if (nextInput && !nextInput.disabled) {
+        nextInput.focus();
+        return;
+      }
+    }
   }
 
   // Stages an explicit "clear this field to the device's unset state"
@@ -587,6 +671,11 @@ class ThzScheduleCard extends HTMLElement {
       this._inputs[fid].classList.add("dirty");
       if (this._clearBtns[fid]) this._clearBtns[fid].classList.add("dirty");
       this._liveNotes[fid].textContent = this._liveValues[fid] ? `was ${this._liveValues[fid]}` : "was unset";
+      // The field is now blank -- record that so a subsequent retyped
+      // value is correctly seen as an incomplete->complete transition by
+      // _onFieldInput's auto-advance logic, instead of a stale "already
+      // complete" from before the Clear.
+      this._fieldWasComplete[fid] = false;
     }
     this._syncApplyBar();
   }
