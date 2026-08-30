@@ -95,6 +95,26 @@ function decimalsOf(step) {
   return i === -1 ? 0 : s.length - i - 1;
 }
 
+function describeError(err) {
+  // hass.callService() doesn't always reject with a plain Error -- a
+  // failed websocket call can reject with a {code, message} result object,
+  // or one nested under .error. Try the shapes actually seen in practice
+  // before falling back to a raw dump, so the apply-bar never just shows
+  // an unhelpful "[object Object]".
+  if (!err) return "Unknown error";
+  if (typeof err === "string") return err;
+  if (err.message) return err.message;
+  if (err.error) return describeError(err.error);
+  if (err.code) return `${err.code}${err.message ? ": " + err.message : ""}`;
+  try {
+    const json = JSON.stringify(err);
+    if (json && json !== "{}") return json;
+  } catch (_e) {
+    // fall through
+  }
+  return String(err);
+}
+
 class ThzScheduleCard extends HTMLElement {
   setConfig(config) {
     if (!config) throw new Error("Invalid configuration");
@@ -579,7 +599,7 @@ class ThzScheduleCard extends HTMLElement {
         this._inputs[id].classList.remove("dirty");
         this._liveNotes[id].textContent = "";
       } catch (err) {
-        failure = (err && err.message) || String(err);
+        failure = `${id}: ${describeError(err)}`;
         break; // Stop here; this field and any not-yet-attempted ones stay pending.
       }
     }
