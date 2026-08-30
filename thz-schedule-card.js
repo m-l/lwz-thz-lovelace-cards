@@ -18,6 +18,12 @@
 // only stages a pending edit (dimmed/highlighted). Nothing is sent until
 // "Apply"; "Discard" reverts all pending edits, whether they're times or
 // setpoints.
+//
+// Each time field also has a small "x" button to clear it back to the
+// device's own "unset" state (equivalent to clearing that slot from the
+// heat pump's own menu). This goes through a dedicated `thz.clear_value`
+// service rather than `time.set_value`, since Home Assistant's built-in
+// service has no way to represent "no time" -- see README.
 
 const DAY_DEFS = [
   { key: "mo", label: "Mon" },
@@ -247,8 +253,12 @@ class ThzScheduleCard extends HTMLElement {
           const id = this._entityIdFor(this._currentFamily, d.key, s, part);
           cells += `
             <td class="timecell" data-entity="${id}">
-              <input type="time" data-entity="${id}" data-kind="time"
-                     aria-label="${d.label} slot ${s + 1} ${part}" />
+              <div class="time-input-row">
+                <input type="time" data-entity="${id}" data-kind="time"
+                       aria-label="${d.label} slot ${s + 1} ${part}" />
+                <button type="button" class="clear-btn" data-entity="${id}"
+                        title="Clear to unset" aria-label="Clear ${d.label} slot ${s + 1} ${part}">✕</button>
+              </div>
               <div class="live-note" data-entity-note="${id}"></div>
             </td>`;
         }
@@ -333,6 +343,17 @@ class ThzScheduleCard extends HTMLElement {
         input:disabled {
           opacity: 0.45; background: var(--divider-color); cursor: not-allowed;
         }
+        .time-input-row { display: flex; align-items: center; justify-content: center; gap: 3px; }
+        .clear-btn {
+          padding: 1px 5px; font-size: 0.75em; line-height: 1.4; border-radius: 4px;
+          border: 1px solid var(--divider-color); background: transparent;
+          color: var(--secondary-text-color); cursor: pointer; font-family: inherit;
+        }
+        .clear-btn:hover:not(:disabled) {
+          color: var(--error-color, #db4437); border-color: var(--error-color, #db4437);
+        }
+        .clear-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+        .clear-btn.dirty { border-color: var(--primary-color, #03a9f4); border-width: 2px; }
         .live-note {
           font-size: 0.7em; color: var(--secondary-text-color); min-height: 1.1em;
           font-variant-numeric: tabular-nums;
@@ -365,7 +386,8 @@ class ThzScheduleCard extends HTMLElement {
           <b>setback</b> automatically, using the Night setpoint below. Set a start time
           later than its end time (e.g. 20:00&nbsp;&rarr;&nbsp;02:00) to span midnight --
           supported natively by the device. Typing a value only stages the change; click
-          Apply to send it.
+          Apply to send it. Use the <b>✕</b> next to a time field to clear it back to
+          "unset" instead of typing a time.
         </div>
         <div class="missing-banner" style="display:none;"></div>
         <div class="setpoints">${setpointCells}</div>
@@ -399,10 +421,16 @@ class ThzScheduleCard extends HTMLElement {
     this._inputs = {};
     this._liveNotes = {};
     this._unitEls = {};
+    this._clearBtns = {};
     for (const id of Object.keys(this._fields)) {
       this._inputs[id] = this.shadowRoot.querySelector(`input[data-entity="${id}"]`);
       this._liveNotes[id] = this.shadowRoot.querySelector(`[data-entity-note="${id}"]`);
       this._inputs[id].addEventListener("input", (ev) => this._onFieldInput(id, ev));
+    }
+    for (const id of Object.keys(this._timeMeta)) {
+      const btn = this.shadowRoot.querySelector(`.clear-btn[data-entity="${id}"]`);
+      this._clearBtns[id] = btn;
+      btn.addEventListener("click", () => this._onClearClick(id));
     }
     for (const sp of this._setpoints) {
       this._unitEls[sp.entityId] = this.shadowRoot.querySelector(`[data-unit="${sp.entityId}"]`);
@@ -454,10 +482,12 @@ class ThzScheduleCard extends HTMLElement {
           `Settings → Devices & services → Entities.`;
         this._liveValues[id] = "";
         if (!pending) input.value = "";
+        if (this._clearBtns[id]) this._clearBtns[id].disabled = true;
         continue;
       }
       input.disabled = false;
       input.title = "";
+      if (this._clearBtns[id]) this._clearBtns[id].disabled = false;
 
       let live;
       if (meta.kind === "time") {
@@ -481,9 +511,13 @@ class ThzScheduleCard extends HTMLElement {
         input.value = live;
         input.classList.remove("dirty");
         this._liveNotes[id].textContent = "";
+        if (this._clearBtns[id]) this._clearBtns[id].classList.remove("dirty");
       } else {
         input.classList.add("dirty");
         this._liveNotes[id].textContent = live ? `was ${live}` : "was unset";
+        if (this._clearBtns[id]) {
+          this._clearBtns[id].classList.toggle("dirty", pending.kind === "time-clear");
+        }
       }
     }
 
@@ -512,10 +546,28 @@ class ThzScheduleCard extends HTMLElement {
       ev.target.classList.remove("dirty");
       this._liveNotes[id].textContent = "";
     } else {
+      // Typing (even blank) always stages a normal "time"/"number" edit;
+      // it overrides any previously-staged Clear action for this field.
       this._pending[id] = { kind, value };
       ev.target.classList.add("dirty");
       this._liveNotes[id].textContent = this._liveValues[id] ? `was ${this._liveValues[id]}` : "was unset";
     }
+    if (this._clearBtns[id]) {
+      this._clearBtns[id].classList.toggle("dirty", this._pending[id]?.kind === "time-clear");
+    }
+    this._syncApplyBar();
+  }
+
+  // Stages an explicit "clear this field to the device's unset state"
+  // edit, distinct from a normal typed value -- see _onApply for how the
+  // two are sent differently (thz.clear_value vs time.set_value).
+  _onClearClick(id) {
+    if (this._inputs[id].disabled) return;
+    this._pending[id] = { kind: "time-clear", value: "" };
+    this._inputs[id].value = "";
+    this._inputs[id].classList.add("dirty");
+    this._clearBtns[id].classList.add("dirty");
+    this._liveNotes[id].textContent = this._liveValues[id] ? `was ${this._liveValues[id]}` : "was unset";
     this._syncApplyBar();
   }
 
@@ -539,6 +591,7 @@ class ThzScheduleCard extends HTMLElement {
       this._inputs[id].value = this._liveValues[id] || "";
       this._inputs[id].classList.remove("dirty");
       this._liveNotes[id].textContent = "";
+      if (this._clearBtns[id]) this._clearBtns[id].classList.remove("dirty");
     }
     this._pending = {};
     this._applyError = "";
@@ -552,8 +605,8 @@ class ThzScheduleCard extends HTMLElement {
     const blankTimes = entries.filter(([, v]) => v.kind === "time" && v.value === "");
     if (blankTimes.length > 0) {
       this._applyError =
-        "Can't clear a slot to “unset” from this card (the time.set_value service " +
-        "requires a real time) -- type a time instead, or clear it from the device's own menu.";
+        "A time field was left blank. Use the “✕” Clear button next to it to unset " +
+        "that slot, or type a real time.";
       this._syncApplyBar();
       return;
     }
@@ -582,6 +635,14 @@ class ThzScheduleCard extends HTMLElement {
         let appliedValue = value;
         if (kind === "time") {
           await this._hass.callService("time", "set_value", { entity_id: id, time: value });
+        } else if (kind === "time-clear") {
+          // Home Assistant's time.set_value service can't represent "no
+          // time" -- its schema requires a real value -- so clearing a
+          // slot goes through the integration's own thz.clear_value
+          // entity service instead, which writes the device's "unset"
+          // sentinel directly.
+          await this._hass.callService("thz", "clear_value", { entity_id: id });
+          appliedValue = "";
         } else {
           const meta = this._numMeta[id] || {};
           let num = Number(value);
@@ -597,6 +658,7 @@ class ThzScheduleCard extends HTMLElement {
         this._liveValues[id] = appliedValue;
         this._inputs[id].value = appliedValue;
         this._inputs[id].classList.remove("dirty");
+        if (this._clearBtns[id]) this._clearBtns[id].classList.remove("dirty");
         this._liveNotes[id].textContent = "";
       } catch (err) {
         failure = `${id}: ${describeError(err)}`;

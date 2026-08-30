@@ -206,15 +206,25 @@ you click Apply, same as the heating curve card.
 
 Apply sends changed fields to the device **one at a time**, not all at
 once — deliberately. A slot's Start and End are two separate `time.*`
-entities that share one physical register on the device, and writing both
-at the same moment can collide on the wire (surfacing as a generic "Failed
-to perform the action time/set_value" error). Sending them sequentially
-means Apply can take a moment longer when several fields changed together,
-but each write completes before the next starts. If Apply does still fail
+entities that share one physical register on the device, and the
+integration's read-modify-write for each one briefly releases its device
+lock between the read and the write step. Sending them sequentially keeps
+at most one write to that shared register in flight at a moment, avoiding
+a genuine (if narrow) risk of one write clobbering the other. Apply can
+take a moment longer when several fields changed together as a result, but
+each write completes before the next starts. If Apply does still fail
 partway through, whatever was already written is cleared from the pending
 list; only the failed field and anything after it in the batch stay
 staged, so you don't lose those edits or have to redo the ones that
 succeeded.
+
+> If every write instantly failed with "Failed to perform the action
+> time/set_value. unknown error" regardless of which field or how many —
+> that wasn't this race at all. It was a bug in the `lwz-thz-403`
+> integration itself (its `time` platform overrode the wrong method name,
+> so every write fell through to Home Assistant's own unimplemented
+> fallback before ever reaching the device). Fixed upstream; update the
+> integration via HACS if you still see it.
 
 ```yaml
 type: custom:thz-schedule-card
@@ -276,10 +286,25 @@ entities:
 | `entities` | *(none)* | `{ day, night, standby }` overrides for the three setpoint entity IDs |
 | `font_size` | `14` | Pixel font size for the card |
 
-A slot can't be cleared back to "unset" from this card — Home Assistant's
-`time.set_value` service requires a real time value, so there's no way to
-send the device's "no time" sentinel through it. Clear a slot from the
-device's own menu if you need that.
+### Clearing a slot to "unset"
+
+Each time field has a small **✕** button next to it. Clicking it stages an
+explicit "clear this slot" edit — shown the same way as a typed change,
+sent only once you click Apply — that sets the slot back to the device's
+own "unset" state, the same as clearing it from the heat pump's own menu.
+
+This goes through a dedicated `thz.clear_value` service rather than Home
+Assistant's built-in `time.set_value`, since that service's schema
+requires a real time value and has no way to express "no time set" at all.
+`thz.clear_value` needs a recent enough `lwz-thz-403` integration version
+(it's what provides the service); update the integration via HACS if
+clicking ✕ fails with a "service not found" error.
+
+Typing an actual time into a field always overrides a staged Clear —
+whichever you did most recently for that field is what Apply sends. A
+field left blank by *typing* (rather than clicking ✕) is still rejected
+with an error asking you to use the Clear button instead, since a blank
+value is ambiguous about what you actually meant.
 
 ## Credit
 
