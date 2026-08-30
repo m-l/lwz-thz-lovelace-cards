@@ -100,6 +100,13 @@ class THZHeatingCurveCard extends HTMLElement {
     this._chartState = null;
     this._lastPointer = null;
 
+    // Unsaved parameter edits, keyed by PARAM_DEFS key (e.g. "gradient").
+    // Populated as the user types, cleared on Apply/Discard, or when a field
+    // is emptied out. Never written to the device until Apply is clicked.
+    this._pending = {};
+    this._applying = false;
+    this._applyError = null;
+
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
     this._buildStaticDom();
   }
@@ -141,16 +148,31 @@ class THZHeatingCurveCard extends HTMLElement {
           --axis-font-size: ${this._axisFontSize}px;
         }
         ha-card { padding: 16px 16px 10px; }
-        .head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+        .head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
         .head h1 { font-size: 1.25em; font-weight: 600; margin: 0; color: var(--primary-text-color); }
+        .preview-badge {
+          display: none; align-items: center; gap: 5px; font-size: 0.8em; font-weight: 600;
+          color: #f0c14b; text-transform: uppercase; letter-spacing: .04em;
+        }
+        .preview-badge .dot {
+          width: 7px; height: 7px; border-radius: 50%; background: #f0c14b;
+          box-shadow: 0 0 0 3px rgba(240,193,75,0.25);
+        }
         .legend { display: flex; gap: 12px; font-size: 0.85em; color: var(--secondary-text-color); }
         .legend span.sw { display:inline-block; width:10px; height:2px; margin-right:4px; vertical-align:middle; }
         svg { display: block; width: 100%; height: auto; }
         .grid { stroke: var(--divider-color, #444); stroke-width: 1; opacity: 0.5; }
         .grid.strong { opacity: 0.9; }
         .axis { fill: var(--secondary-text-color); font-size: var(--axis-font-size); font-family: var(--paper-font-common-base_-_font-family, inherit); }
-        .curve-a { stroke: #cf6f34; stroke-width: 2.25; fill: none; stroke-linecap: round; }
-        .curve-b { stroke: #149bb0; stroke-width: 1.75; fill: none; stroke-linecap: round; stroke-dasharray: 1 5; }
+        .curve-a { stroke: #cf6f34; stroke-width: 2.25; fill: none; stroke-linecap: round; transition: opacity 0.15s ease; }
+        .curve-b { stroke: #149bb0; stroke-width: 1.75; fill: none; stroke-linecap: round; stroke-dasharray: 1 5; transition: opacity 0.15s ease; }
+        /* The currently-applied curve, stepped back once a preview is showing. */
+        .curve-dim { opacity: 0.28; }
+        /* The unsaved preview curve: same colours, drawn brighter/bolder and
+           on top so it reads as "this is what you're about to apply". */
+        .curve-preview { opacity: 1; filter: saturate(1.35) brightness(1.15); }
+        .curve-preview.curve-a { stroke-width: 3; }
+        .curve-preview.curve-b { stroke-width: 2.25; }
         .marker-ring { fill: rgba(240,193,75,0.20); stroke: none; }
         .marker-dot { fill: #f0c14b; stroke: var(--card-background-color, #1c1c1c); stroke-width: 2; }
         .marker-vline { stroke: #f0c14b; stroke-width: 1; stroke-dasharray: 2 3; opacity: 0.7; }
@@ -182,10 +204,29 @@ class THZHeatingCurveCard extends HTMLElement {
         }
         .param-row input[type="number"]:disabled { opacity: 0.5; }
         .unavailable { color: var(--secondary-text-color); font-size: 0.95em; padding: 8px 0; }
+        .apply-bar {
+          display: none; align-items: center; gap: 10px; flex-wrap: wrap;
+          margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--divider-color);
+        }
+        .apply-bar .msg { flex: 1; min-width: 180px; font-size: 0.9em; color: var(--secondary-text-color); }
+        .apply-bar .msg b { color: var(--primary-text-color); font-variant-numeric: tabular-nums; }
+        .apply-bar .error { flex-basis: 100%; font-size: 0.85em; color: #d68a1c; }
+        .apply-bar button {
+          font: inherit; font-weight: 600; font-size: 0.9em; border-radius: 8px;
+          padding: 7px 16px; cursor: pointer; border: 1px solid transparent;
+        }
+        .apply-bar button:disabled { opacity: 0.55; cursor: default; }
+        .apply-bar .btn-discard {
+          background: transparent; border-color: var(--divider-color); color: var(--primary-text-color);
+        }
+        .apply-bar .btn-apply {
+          background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff);
+        }
       </style>
       <ha-card>
         <div class="head">
           <h1></h1>
+          <span class="preview-badge"><span class="dot"></span>Unsaved preview</span>
           <div class="legend">
             <span><span class="sw" style="background:#cf6f34"></span>with room infl.</span>
             <span><span class="sw" style="background:#149bb0"></span>simplified</span>
@@ -194,9 +235,17 @@ class THZHeatingCurveCard extends HTMLElement {
         <div class="chart-slot"></div>
         <div class="stats"></div>
         <div class="params"></div>
+        <div class="apply-bar">
+          <span class="msg"></span>
+          <span class="error"></span>
+          <button type="button" class="btn-discard">Discard</button>
+          <button type="button" class="btn-apply">Apply</button>
+        </div>
       </ha-card>
     `;
     root.querySelector("h1").textContent = this._title;
+    root.querySelector(".btn-discard").addEventListener("click", () => this._onDiscard());
+    root.querySelector(".btn-apply").addEventListener("click", () => this._onApply());
     this._buildParamRows();
   }
 
@@ -217,7 +266,7 @@ class THZHeatingCurveCard extends HTMLElement {
       input.type = "number";
       input.inputMode = "decimal";
       input.setAttribute("aria-label", p.label);
-      input.addEventListener("change", () => this._onParamChange(p.key, input));
+      input.addEventListener("input", () => this._onParamInput(p.key, input));
       input.addEventListener("keydown", (ev) => {
         if (ev.key === "Enter") input.blur();
       });
@@ -229,15 +278,70 @@ class THZHeatingCurveCard extends HTMLElement {
     }
   }
 
-  _onParamChange(key, input) {
-    const entityId = this._entities[key];
-    if (!this._hass || !entityId) return;
-    let v = parseFloat(input.value);
-    if (Number.isNaN(v)) return;
-    const meta = this._meta(entityId);
-    if (typeof meta.min === "number") v = Math.max(meta.min, v);
-    if (typeof meta.max === "number") v = Math.min(meta.max, v);
-    this._hass.callService("number", "set_value", { entity_id: entityId, value: v });
+  // Fires on every keystroke. Never touches the device -- just records the
+  // typed value as a pending edit and redraws the chart so the (dimmed)
+  // currently-applied curve and the (bright) preview curve can be compared
+  // side by side. Nothing reaches the LWZ until Apply is clicked.
+  _onParamInput(key, input) {
+    const raw = input.value.trim();
+    if (raw === "") {
+      delete this._pending[key];
+    } else {
+      const v = parseFloat(raw);
+      // Leave the previous pending value (if any) in place while the user is
+      // mid-way through typing something not yet a valid number (e.g. "-"
+      // or "1."), rather than dropping their edit.
+      if (!Number.isNaN(v)) this._pending[key] = v;
+    }
+    this._render();
+  }
+
+  // True when `key`'s pending edit differs from the live device value at
+  // the precision the field displays it with -- so retyping the same value
+  // (or floating-point noise from the device's own reported state) never
+  // shows as a false "unsaved change".
+  _isDirty(key, digits) {
+    if (!(key in this._pending) || !this._live) return false;
+    const live = this._live[key];
+    if (live === null || live === undefined) return true;
+    return fmt(this._pending[key], digits) !== fmt(live, digits);
+  }
+
+  _dirtyKeys() {
+    return PARAM_DEFS.filter((p) => this._isDirty(p.key, p.digits)).map((p) => p.key);
+  }
+
+  _onDiscard() {
+    this._pending = {};
+    this._applyError = null;
+    this._render();
+  }
+
+  async _onApply() {
+    const dirty = this._dirtyKeys();
+    if (!dirty.length || !this._hass || this._applying) return;
+    this._applying = true;
+    this._applyError = null;
+    this._render();
+    try {
+      await Promise.all(
+        dirty.map((key) => {
+          const entityId = this._entities[key];
+          let v = this._pending[key];
+          const meta = this._meta(entityId);
+          if (typeof meta.min === "number") v = Math.max(meta.min, v);
+          if (typeof meta.max === "number") v = Math.min(meta.max, v);
+          return this._hass.callService("number", "set_value", { entity_id: entityId, value: v });
+        })
+      );
+      for (const key of dirty) delete this._pending[key];
+    } catch (err) {
+      this._applyError = "Could not apply changes -- see the browser console for details.";
+      console.error("thz-heating-curve-card: apply failed", err); // eslint-disable-line no-console
+    } finally {
+      this._applying = false;
+      this._render();
+    }
   }
 
   _svgSkeleton(yMin, yMax, step) {
@@ -275,6 +379,10 @@ class THZHeatingCurveCard extends HTMLElement {
     const outsideNow = this._num(e.outside_temp);
     const flowNow = this._num(e.heat_set_temp);
 
+    // Live (currently-applied) values, used by _isDirty() to tell an actual
+    // edit apart from the field simply echoing back what's already set.
+    this._live = { gradient, low_end: lowEnd, room_influence: roomInf };
+
     const missing = [
       ["gradient", gradient], ["low_end", lowEnd], ["room_influence", roomInf],
       ["room_set", roomSet], ["inside_temp", inside],
@@ -282,14 +390,22 @@ class THZHeatingCurveCard extends HTMLElement {
 
     const chartSlot = root.querySelector(".chart-slot");
     const statsSlot = root.querySelector(".stats");
+    const dirtyKeys = missing.length ? [] : this._dirtyKeys();
+    const isDirty = dirtyKeys.length > 0;
 
     if (missing.length) {
       chartSlot.innerHTML = `<div class="unavailable">Waiting on: ${missing.map((k) => e[k]).join(", ")}</div>`;
       statsSlot.innerHTML = "";
       this._chartState = null;
     } else {
+      // Preview values: the pending (unsaved) edit for a dirty key, the live
+      // device value for everything else.
+      const pGradient = dirtyKeys.includes("gradient") ? this._pending.gradient : gradient;
+      const pLowEnd = dirtyKeys.includes("low_end") ? this._pending.low_end : lowEnd;
+      const pRoomInf = dirtyKeys.includes("room_influence") ? this._pending.room_influence : roomInf;
+
       const N = 70;
-      const ptsA = [], ptsB = [];
+      const ptsA = [], ptsB = [], ptsA2 = [], ptsB2 = [];
       let yMin = Infinity, yMax = -Infinity;
       for (let i = 0; i <= N; i++) {
         const T = X_MIN + ((X_MAX - X_MIN) * i) / N;
@@ -297,6 +413,12 @@ class THZHeatingCurveCard extends HTMLElement {
         const vB = curveValue(T, gradient, lowEnd, roomInf, roomSet, inside, false);
         ptsA.push([T, vA]); ptsB.push([T, vB]);
         yMin = Math.min(yMin, vA, vB); yMax = Math.max(yMax, vA, vB);
+        if (isDirty) {
+          const vA2 = curveValue(T, pGradient, pLowEnd, pRoomInf, roomSet, inside, true);
+          const vB2 = curveValue(T, pGradient, pLowEnd, pRoomInf, roomSet, inside, false);
+          ptsA2.push([T, vA2]); ptsB2.push([T, vB2]);
+          yMin = Math.min(yMin, vA2, vB2); yMax = Math.max(yMax, vA2, vB2);
+        }
       }
       if (flowNow !== null) { yMin = Math.min(yMin, flowNow); yMax = Math.max(yMax, flowNow); }
       const step = niceStep(yMax - yMin);
@@ -306,9 +428,17 @@ class THZHeatingCurveCard extends HTMLElement {
 
       const xToPx = (t) => pad.l + ((t - X_MIN) / (X_MAX - X_MIN)) * this._plotW;
       const yToPx = (v) => pad.t + (1 - (v - yLo) / (yHi - yLo)) * this._plotH;
+      const toPath = (pts) => "M " + pts.map(([t, v]) => `${xToPx(t).toFixed(1)},${yToPx(v).toFixed(1)}`).join(" L ");
 
-      const pathA = "M " + ptsA.map(([t, v]) => `${xToPx(t).toFixed(1)},${yToPx(v).toFixed(1)}`).join(" L ");
-      const pathB = "M " + ptsB.map(([t, v]) => `${xToPx(t).toFixed(1)},${yToPx(v).toFixed(1)}`).join(" L ");
+      const pathA = toPath(ptsA);
+      const pathB = toPath(ptsB);
+      // Once there's an unsaved edit, the currently-applied curve steps back
+      // (dimmed, via CSS opacity) so the bright preview curve -- computed
+      // from what's actually typed in the fields right now -- reads as the
+      // "new" one being proposed. Nothing here has touched the device yet.
+      const previewSvg = isDirty
+        ? `<path class="curve-b curve-preview" d="${toPath(ptsB2)}"></path><path class="curve-a curve-preview" d="${toPath(ptsA2)}"></path>`
+        : "";
 
       let markerSvg = "";
       let deltaHtml = "";
@@ -324,13 +454,21 @@ class THZHeatingCurveCard extends HTMLElement {
           <div class="stat"><span class="l">Device reads</span><span class="v">${fmt(flowNow)}&deg;C</span></div>
           <div class="stat"><span class="l">Difference</span><span class="v${Math.abs(delta) >= 1.5 ? " warn" : ""}">${delta >= 0 ? "+" : ""}${fmt(delta)} K</span></div>
         `;
+        if (isDirty) {
+          const previewExpected = curveValue(outsideNow, pGradient, pLowEnd, pRoomInf, roomSet, inside, true);
+          const previewDelta = previewExpected - expected;
+          deltaHtml += `
+            <div class="stat"><span class="l">Preview says</span><span class="v">${fmt(previewExpected)}&deg;C<span style="color:var(--secondary-text-color); font-weight:400;"> (${previewDelta >= 0 ? "+" : ""}${fmt(previewDelta)} K)</span></span></div>
+          `;
+        }
       }
 
       chartSlot.innerHTML = `
         <svg viewBox="0 0 ${W} ${H}">
           <g>${this._svgSkeleton(yLo, yHi, step)}</g>
-          <path class="curve-b" d="${pathB}"></path>
-          <path class="curve-a" d="${pathA}"></path>
+          <path class="curve-b${isDirty ? " curve-dim" : ""}" d="${pathB}"></path>
+          <path class="curve-a${isDirty ? " curve-dim" : ""}" d="${pathA}"></path>
+          ${previewSvg}
           ${markerSvg}
           <g class="hover-crosshair" style="display:none">
             <line class="hover-vline" x1="0" y1="0" x2="0" y2="0"/>
@@ -343,28 +481,67 @@ class THZHeatingCurveCard extends HTMLElement {
       `;
       statsSlot.innerHTML = deltaHtml;
 
-      this._chartState = { pad, plotW: this._plotW, plotH: this._plotH, yLo, yHi, gradient, lowEnd, roomInf, roomSet, inside };
+      // Hover crosshair always follows the preview curve when one is shown,
+      // since that's the curve the user is actively shaping.
+      this._chartState = {
+        pad, plotW: this._plotW, plotH: this._plotH, yLo, yHi,
+        gradient: pGradient, lowEnd: pLowEnd, roomInf: pRoomInf, roomSet, inside,
+      };
       this._wireHover(chartSlot);
     }
 
+    root.querySelector(".preview-badge").style.display = isDirty ? "inline-flex" : "none";
+    this._syncParamInputs({ gradient, low_end: lowEnd, room_influence: roomInf });
+    this._syncApplyBar(dirtyKeys);
+  }
+
+  _syncParamInputs(liveValues) {
+    const root = this.shadowRoot;
     const activeEl = root.activeElement;
-    const values = { gradient, low_end: lowEnd, room_influence: roomInf };
+    const e = this._entities;
     for (const p of PARAM_DEFS) {
       const input = this._paramEls[p.key];
       const entityId = e[p.key];
       const meta = this._meta(entityId);
-      const value = values[p.key];
+      const value = liveValues[p.key];
 
       if (typeof meta.min === "number") input.min = String(meta.min); else input.removeAttribute("min");
       if (typeof meta.max === "number") input.max = String(meta.max); else input.removeAttribute("max");
       input.step = String(typeof meta.step === "number" ? meta.step : (this._step[p.key] ?? 1));
       input.disabled = value === null;
 
-      // Never overwrite a field the user is actively editing.
-      if (activeEl !== input) {
+      // Never overwrite a field the user is actively editing, nor one that
+      // holds an unapplied edit -- otherwise an unrelated entity updating
+      // elsewhere (which re-renders every card on every state change) would
+      // silently wipe out whatever the user just typed here.
+      if (activeEl !== input && !(p.key in this._pending)) {
         input.value = value === null ? "" : fmt(value, p.digits);
       }
     }
+  }
+
+  _syncApplyBar(dirtyKeys) {
+    const root = this.shadowRoot;
+    const bar = root.querySelector(".apply-bar");
+    const msg = bar.querySelector(".msg");
+    const errEl = bar.querySelector(".error");
+    const applyBtn = bar.querySelector(".btn-apply");
+    const discardBtn = bar.querySelector(".btn-discard");
+
+    if (!dirtyKeys.length) {
+      bar.style.display = "none";
+      return;
+    }
+    bar.style.display = "flex";
+
+    const byKey = Object.fromEntries(PARAM_DEFS.map((p) => [p.key, p]));
+    msg.innerHTML = dirtyKeys
+      .map((k) => `${byKey[k].label}: <b>${fmt(this._live[k], byKey[k].digits)} → ${fmt(this._pending[k], byKey[k].digits)}</b>`)
+      .join(" &middot; ");
+    errEl.textContent = this._applyError || "";
+    applyBtn.disabled = this._applying;
+    applyBtn.textContent = this._applying ? "Applying…" : "Apply";
+    discardBtn.disabled = this._applying;
   }
 
   // Draws a crosshair (vertical + horizontal dotted lines, a dot, and a

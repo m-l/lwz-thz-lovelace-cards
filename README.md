@@ -19,7 +19,7 @@ Gradient, Low End and Room Influence with immediate visual feedback.
 - Gridlines every 5°C of outside temperature, plus a horizontal gridline at each y-axis step, to make the plot easier to read at a glance.
 - Hover the chart to get a crosshair: move your mouse to any outside temperature and see exactly what flow temperature the curve would request there.
 - A stats row: outside temperature, what the curve predicts, what the device reports, and the delta between them (flagged once it drifts 1.5 K or more).
-- Editable number fields for Gradient, Low End and Room Influence that call `number.set_value` directly, so you can type a new value and watch the curve move without leaving the dashboard.
+- Editable number fields for Gradient, Low End and Room Influence. Typing a value never touches the device by itself — it only redraws the chart: your current settings stay plotted (dimmed) for comparison, a brighter preview curve shows what the new values would do, and an **Apply** button appears to actually send the change. **Discard** clears the edit without sending anything.
 - Configurable text size for readability on different screens — `font_size` for the card, `axis_font_size` for the chart's axis labels.
 
 ## Installation
@@ -45,9 +45,16 @@ title: HC1 Heating Curve
 ```
 
 Gradient, Low End and Room Influence are editable number fields (not
-+/- buttons) — type a value and press Enter or click away to send it.
-If the underlying `number.*` entity has `min`/`max`/`step` set, the field
-uses those; otherwise it falls back to the `step:` config below.
++/- buttons). Typing a value only updates the chart — your currently-applied
+curve stays visible but dimmed, and a brighter preview curve shows what the
+typed value would produce, so you can compare the two before committing to
+anything. Nothing is sent to the device until you click **Apply**, which
+shows up (along with a summary of exactly what's changing) as soon as any
+field differs from its live value; **Discard** reverts every field to its
+live value without sending anything. If the underlying `number.*` entity
+has `min`/`max`/`step` set, the field uses those (and Apply clamps to
+`min`/`max` if you typed something outside range); otherwise it falls back
+to the `step:` config below.
 
 Text is small by default to fit a lot of chart in a small card. Two
 separate settings control it, because the chart's axis labels live inside
