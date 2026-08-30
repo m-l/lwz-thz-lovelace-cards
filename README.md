@@ -1,10 +1,34 @@
-# THZ Heating Curve Card
+# THZ Lovelace Cards
 
-A Home Assistant Lovelace card that plots the live heating curve for a
-Stiebel Eltron / Tecalor LWZ/THZ heat pump originally managed by the
-[`lwz-thz-403`](https://github.com/m-l/lwz-thz-403) integration.
+Two Home Assistant Lovelace cards for a Stiebel Eltron / Tecalor LWZ/THZ
+heat pump managed by the
+[`lwz-thz-403`](https://github.com/m-l/lwz-thz-403) integration:
+
+- **Heating Curve Card** (`custom:thz-heating-curve-card`) — plots the live
+  heating curve and lets you tune Gradient, Low End and Room Influence with
+  immediate visual feedback.
+- **Weekly Schedule Card** (`custom:thz-schedule-card`) — a 7-day grid for
+  editing the HC1/HC2/DHW/Fan comfort-window schedules.
 
 <img width="496" height="463" alt="image" src="https://github.com/user-attachments/assets/157f46fc-793f-470e-a749-5141c55cfe8b" />
+
+## Installation
+
+### HACS (recommended)
+
+1. In Home Assistant, go to **HACS → ⋮ (top right) → Custom repositories**.
+2. Add `https://github.com/m-l/lwz-thz-lovelace-cards`, category **Dashboard**.
+3. Find **THZ Lovelace Cards** in HACS and install it.
+4. HACS registers `thz-heating-curve-card.js` as a Lovelace resource for you. If it doesn't show up in the card picker, add it manually under **Settings → Dashboards → Resources**: URL `/hacsfiles/lwz-thz-lovelace-cards/thz-heating-curve-card.js`, type **JavaScript Module** — then hard-refresh your browser.
+5. HACS downloads the whole repository, so `thz-schedule-card.js` lands alongside it automatically — it just isn't auto-registered, since a HACS "Dashboard" repo only auto-registers the one `filename` listed in `hacs.json`. Add it as a **second** resource yourself: **Settings → Dashboards → ⋮ → Resources → Add Resource**, URL `/hacsfiles/lwz-thz-lovelace-cards/thz-schedule-card.js`, type **JavaScript Module**.
+
+### Manual
+
+1. Copy whichever card(s) you want — `thz-heating-curve-card.js` and/or `thz-schedule-card.js` — into `config/www/` on your Home Assistant instance.
+2. Add each as its own Lovelace resource: **Settings → Dashboards → ⋮ → Resources → Add Resource**, URL `/local/thz-heating-curve-card.js` and/or `/local/thz-schedule-card.js`, type **JavaScript Module**.
+3. Hard-refresh your browser.
+
+## Heating Curve Card
 
 It reads the curve parameters and live sensor values directly from your
 entities, draws both the raw and room-influence-corrected curves, marks
@@ -12,7 +36,7 @@ the current operating point, and shows how far the device's actual
 heat-set-temp has drifted from what the curve predicts — so you can tune
 Gradient, Low End and Room Influence with immediate visual feedback.
 
-## Features
+### Features
 
 - Live SVG plot of the heating curve (with and without room-influence correction), computed with the same formula used by the FHEM `THZ` module (`function_heatSetTemp`).
 - A working-point marker plotted from your actual current outside temperature and heat-set-temp, with a thin dotted line down to the outside-temp scale so it's easy to read off.
@@ -22,22 +46,7 @@ Gradient, Low End and Room Influence with immediate visual feedback.
 - Editable number fields for Gradient, Low End and Room Influence. Typing a value never touches the device by itself — it only redraws the chart: your current settings stay plotted (dimmed) for comparison, a brighter preview curve shows what the new values would do, and an **Apply** button appears to actually send the change. **Discard** clears the edit without sending anything.
 - Configurable text size for readability on different screens — `font_size` for the card, `axis_font_size` for the chart's axis labels.
 
-## Installation
-
-### HACS (recommended)
-
-1. In Home Assistant, go to **HACS → ⋮ (top right) → Custom repositories**.
-2. Add `https://github.com/m-l/lwz-thz-heating-curve-lovelace`, category **Dashboard**.
-3. Find **THZ Heating Curve Card** in HACS and install it.
-4. HACS registers the Lovelace resource for you. If the card doesn't show up in the card picker, add it manually under **Settings → Dashboards → Resources**: URL `/hacsfiles/lwz-thz-heating-curve-lovelace/thz-heating-curve-card.js`, type **JavaScript Module** — then hard-refresh your browser.
-
-### Manual
-
-1. Copy `thz-heating-curve-card.js` into `config/www/` on your Home Assistant instance.
-2. Add it as a Lovelace resource: **Settings → Dashboards → ⋮ → Resources → Add Resource**, URL `/local/thz-heating-curve-card.js`, type **JavaScript Module**.
-3. Hard-refresh your browser.
-
-## Usage
+### Usage
 
 ```yaml
 type: custom:thz-heating-curve-card
@@ -99,7 +108,135 @@ entities:
 | `outside_temp` | `sensor.lwz403_outside_temp_filtered` | |
 | `heat_set_temp` | `sensor.lwz403_heat_set_temp` | Device's own computed target, for the delta comparison |
 
+## Weekly Schedule Card
+
+`custom:thz-schedule-card` edits the weekly **comfort** time windows for one
+program family — HC1 heating, HC2 heating, DHW hot water, or Fan
+ventilation — as a 7-day grid, three slots per day (matching the device's
+own three program slots).
+
+### The model: comfort windows, not "setback windows"
+
+The underlying registers (`programHC1_*`, `programDHW_*`, `programFan_*`,
+...) each define a **comfort/day** window. Any time of day that isn't
+covered by one of a day's (up to three) comfort windows falls back to
+**setback** automatically — there is no separate "setback start/end"
+entity to edit. So to get, say, a setback period of 22:00–06:00, you don't
+enter that directly: you set a comfort window of 06:00–22:00 (or split
+across two of the day's three slots) and let the device default the rest to
+setback.
+
+### Windows spanning midnight
+
+A slot can cross midnight by setting its start time later than its end
+time — e.g. 20:00 (start) → 02:00 (end) for a comfort window that runs
+into the small hours. This is genuine, documented Stiebel Eltron firmware
+behaviour (confirmed against the official operating manual: "Wenn Sie z.B.
+für Montag eine Absenkzeit von 22:00 bis 6:00 einstellen, so beginnt die
+Absenkung Montag um 22:00 und endet Dienstag um 6:00" — the device
+explicitly interprets start > end as spanning into the next day), not a
+workaround, so the card doesn't do anything special for it: just type the
+times in either order.
+
+### Individual weekdays only — a known, unresolved edge case
+
+This card only reads and writes the seven **individual weekday** registers
+per slot (`..._Mo_0`, `..._Tu_0`, ... `..._So_0`, and `_1`/`_2`). The
+integration's register map separately exposes `Mo-Fr`/`Sa-So`/`Mo-So`
+"group" registers at their own, independent addresses — these are a
+convenience the device also offers, not an alias for the individual days.
+Whether the device's firmware gives one of these two representations
+priority if both are set and disagree for the same real day could not be
+confirmed from the official documentation, the integration's source, or a
+search of the FHEM/LWZ community forums. Because this card never writes to
+the `Mo-Fr`/`Sa-So`/`Mo-So` registers itself, this only matters if you (or
+a previous configuration) also set a group schedule via the device's own
+menu or via those registers directly — if so, check the device's own menu
+once to make sure nothing there conflicts with what you set here, or clear
+it first.
+
+### Prerequisites
+
+Schedule entities are hidden by default by the `lwz-thz-403` integration
+(its "Entity visibility" option defaults to hiding schedule/program
+entities to avoid cluttering a first-time setup). Before this card can see
+them:
+
+1. In the integration's options, set **Entity visibility** to **Extended**
+   or **All**.
+2. Under **Settings → Devices & services → Entities**, search for
+   `program_<family>` (e.g. `program_hc1`) and enable any that are still
+   disabled — changing the option above only affects entities created
+   *after* the change, not ones already in the registry.
+
+The card itself flags any entity it can't find with a banner naming the
+setting above, so you don't have to guess why a field looks greyed out.
+
+### Usage
+
+```yaml
+type: custom:thz-schedule-card
+title: HC1 Heating Schedule
+family: hc1
+```
+
+`family` selects the program group: `hc1` (default), `hc2`, `dhw`, or
+`fan`. Typing a time only stages the change (the field outlines and a small
+"was HH:MM" note appears below it) — nothing is sent until you click
+**Apply**, which lists how many fields changed; **Discard** reverts
+everything back to the live values.
+
+```yaml
+type: custom:thz-schedule-card
+title: Ventilation Schedule
+family: fan
+```
+
+```yaml
+type: custom:thz-schedule-card
+title: DHW Schedule
+family: dhw
+```
+
+The default entity IDs follow the same FHEM-style naming as the heating
+curve card, e.g. `time.lwz403_program_hc1_mo_0_start`. If your setup uses a
+different device alias than `lwz403`, override the prefix:
+
+```yaml
+type: custom:thz-schedule-card
+title: HC1 Heating Schedule
+family: hc1
+entity_id_prefix: myalias
+```
+
+If your entity IDs don't follow this pattern at all (for example, you're on
+`entity_id_style: default` rather than `fhem`), override the whole
+template — `{prefix}`, `{family}`, `{day}` (`mo`/`tu`/.../`so`), `{slot}`
+(`0`/`1`/`2`) and `{part}` (`start`/`end`) are substituted in:
+
+```yaml
+type: custom:thz-schedule-card
+title: HC1 Heating Schedule
+family: hc1
+entity_template: "time.{prefix}_program_{family}_{day}_{slot}_{part}"
+```
+
+| Key | Default | Notes |
+|---|---|---|
+| `family` | `hc1` | `hc1`, `hc2`, `dhw`, or `fan` |
+| `slots` | `3` | Program slots per day (matches the device) |
+| `entity_id_prefix` | `lwz403` | Device alias used in the default entity template |
+| `entity_template` | `time.{prefix}_program_{family}_{day}_{slot}_{part}` | Full override for non-standard entity IDs |
+| `font_size` | `14` | Pixel font size for the card |
+
+A slot can't be cleared back to "unset" from this card — Home Assistant's
+`time.set_value` service requires a real time value, so there's no way to
+send the device's "no time" sentinel through it. Clear a slot from the
+device's own menu if you need that.
+
 ## Credit
 
 Curve formula ported from the FHEM `00_THZ.pm` community module's
-`function_heatSetTemp` / `THZ_PrintcurveSVG`.
+`function_heatSetTemp` / `THZ_PrintcurveSVG`. The comfort/setback and
+midnight-crossing behaviour of the weekly schedule card is confirmed
+against Stiebel Eltron's own LWZ operating manual.
