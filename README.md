@@ -113,7 +113,11 @@ entities:
 `custom:thz-schedule-card` edits the weekly **comfort** time windows for one
 program family — HC1 heating, HC2 heating, DHW hot water, or Fan
 ventilation — as a 7-day grid, three slots per day (matching the device's
-own three program slots).
+own three program slots) — plus the **Day**, **Night** and **Standby**
+setpoints that a comfort/setback window actually switches between (room
+temperature for HC1/HC2, DHW temperature for DHW, fan stage for Fan), shown
+above the grid so you can see and change both halves of the schedule in one
+place.
 
 ### The model: comfort windows, not "setback windows"
 
@@ -157,17 +161,22 @@ it first.
 
 ### Prerequisites
 
-Schedule entities are hidden by default by the `lwz-thz-403` integration
-(its "Entity visibility" option defaults to hiding schedule/program
-entities to avoid cluttering a first-time setup). Before this card can see
-them:
+The schedule grid's entities (every `program*` register, in all four
+families) are hidden by default by the `lwz-thz-403` integration (its
+"Entity visibility" option defaults to hiding schedule/program entities to
+avoid cluttering a first-time setup). The three setpoint entities are
+usually visible by default too — **except for HC2**, which the integration
+treats as an advanced/HC2 entity and hides the same way. Before this card
+can see everything it needs:
 
-1. In the integration's options, set **Entity visibility** to **Extended**
-   or **All**.
+1. In the integration's options, set **Entity visibility** to **All** — the
+   schedule grid itself needs this tier specifically; **Extended** only
+   unhides advanced/HC2 entities (including the HC2 setpoints) and still
+   hides every `program*` schedule entity.
 2. Under **Settings → Devices & services → Entities**, search for
-   `program_<family>` (e.g. `program_hc1`) and enable any that are still
-   disabled — changing the option above only affects entities created
-   *after* the change, not ones already in the registry.
+   `program_<family>` (e.g. `program_hc1`) and, for HC2, `hc2`, and enable
+   any that are still disabled — changing the option above only affects
+   entities created *after* the change, not ones already in the registry.
 
 The card itself flags any entity it can't find with a banner naming the
 setting above, so you don't have to guess why a field looks greyed out.
@@ -181,10 +190,12 @@ family: hc1
 ```
 
 `family` selects the program group: `hc1` (default), `hc2`, `dhw`, or
-`fan`. Typing a time only stages the change (the field outlines and a small
-"was HH:MM" note appears below it) — nothing is sent until you click
-**Apply**, which lists how many fields changed; **Discard** reverts
-everything back to the live values.
+`fan`. Typing a time or a setpoint only stages the change (the field
+outlines and a small "was ..." note appears below it) — nothing is sent
+until you click **Apply**, which lists how many fields changed across both
+the schedule grid and the setpoints row; **Discard** reverts everything
+back to the live values. A setpoint typed outside its entity's `min`/`max`
+is clamped when you click Apply, same as the heating curve card.
 
 ```yaml
 type: custom:thz-schedule-card
@@ -199,8 +210,10 @@ family: dhw
 ```
 
 The default entity IDs follow the same FHEM-style naming as the heating
-curve card, e.g. `time.lwz403_program_hc1_mo_0_start`. If your setup uses a
-different device alias than `lwz403`, override the prefix:
+curve card, e.g. `time.lwz403_program_hc1_mo_0_start` for the schedule and
+`number.lwz403_p01_room_temp_day_hc1` for the Day setpoint. If your setup
+uses a different device alias than `lwz403`, override the prefix — it
+applies to both the schedule and the setpoint entity IDs:
 
 ```yaml
 type: custom:thz-schedule-card
@@ -209,10 +222,10 @@ family: hc1
 entity_id_prefix: myalias
 ```
 
-If your entity IDs don't follow this pattern at all (for example, you're on
-`entity_id_style: default` rather than `fhem`), override the whole
-template — `{prefix}`, `{family}`, `{day}` (`mo`/`tu`/.../`so`), `{slot}`
-(`0`/`1`/`2`) and `{part}` (`start`/`end`) are substituted in:
+If your schedule entity IDs don't follow this pattern at all (for example,
+you're on `entity_id_style: default` rather than `fhem`), override the
+whole template — `{prefix}`, `{family}`, `{day}` (`mo`/`tu`/.../`so`),
+`{slot}` (`0`/`1`/`2`) and `{part}` (`start`/`end`) are substituted in:
 
 ```yaml
 type: custom:thz-schedule-card
@@ -221,12 +234,27 @@ family: hc1
 entity_template: "time.{prefix}_program_{family}_{day}_{slot}_{part}"
 ```
 
+The setpoint entity IDs aren't covered by `entity_template` (their names
+don't follow the same `{family}`/`{day}`/`{slot}` shape as the schedule
+registers) — override them individually with `entities` instead:
+
+```yaml
+type: custom:thz-schedule-card
+title: HC1 Heating Schedule
+family: hc1
+entities:
+  day: number.lwz403_p01_room_temp_day_hc1
+  night: number.lwz403_p02_room_temp_night_hc1
+  standby: number.lwz403_p03_room_temp_standby_hc1
+```
+
 | Key | Default | Notes |
 |---|---|---|
 | `family` | `hc1` | `hc1`, `hc2`, `dhw`, or `fan` |
 | `slots` | `3` | Program slots per day (matches the device) |
-| `entity_id_prefix` | `lwz403` | Device alias used in the default entity template |
-| `entity_template` | `time.{prefix}_program_{family}_{day}_{slot}_{part}` | Full override for non-standard entity IDs |
+| `entity_id_prefix` | `lwz403` | Device alias used in the default entity template and setpoint IDs |
+| `entity_template` | `time.{prefix}_program_{family}_{day}_{slot}_{part}` | Full override for non-standard schedule entity IDs |
+| `entities` | *(none)* | `{ day, night, standby }` overrides for the three setpoint entity IDs |
 | `font_size` | `14` | Pixel font size for the card |
 
 A slot can't be cleared back to "unset" from this card — Home Assistant's
