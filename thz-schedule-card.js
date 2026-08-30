@@ -4,6 +4,8 @@
 // HC2 heating, DHW hot water, or Fan ventilation) on a Stiebel Eltron /
 // Tecalor LWZ/THZ heat pump managed by the `lwz-thz-403` integration --
 // plus the Day/Night/Standby setpoint that each window switches between.
+// A dropdown at the top of the card switches between families without
+// touching the dashboard YAML.
 //
 // Important model note (see README): each slot below defines a COMFORT
 // ("day") window. Any time NOT covered by a comfort window falls back to
@@ -33,6 +35,11 @@ const FAMILY_TITLES = {
   dhw: "DHW Schedule",
   fan: "Ventilation Schedule",
 };
+
+// Families offered by the in-card switcher. HC2 is intentionally left out
+// of this list (per the integration's own default scope) but still works
+// if you set `family: hc2` in YAML -- it just won't appear in the dropdown.
+const SWITCHABLE_FAMILIES = ["hc1", "dhw", "fan"];
 
 // The setpoint each family's comfort/setback windows switch between.
 // `base` is the integration's internal register name -- run through the
@@ -92,52 +99,72 @@ class ThzScheduleCard extends HTMLElement {
   setConfig(config) {
     if (!config) throw new Error("Invalid configuration");
 
-    const family = String(config.family || "hc1").toLowerCase();
-    const slots = Number.isInteger(config.slots) ? config.slots : 3;
-    const prefix = config.entity_id_prefix != null ? config.entity_id_prefix : "lwz403";
-    const template =
+    this._rawConfig = config;
+    this._slots = Number.isInteger(config.slots) ? config.slots : 3;
+    this._prefix = config.entity_id_prefix != null ? config.entity_id_prefix : "lwz403";
+    this._template =
       config.entity_template || "time.{prefix}_program_{family}_{day}_{slot}_{part}";
-    const days = config.days || DAY_DEFS;
-    const fontSize = config.font_size || 14;
-    const title = config.title || FAMILY_TITLES[family] || "THZ Schedule";
-    const setpointOverrides = config.entities || {};
+    this._days = config.days || DAY_DEFS;
+    this._fontSize = config.font_size || 14;
+    this._userTitle = config.title || null;
 
-    this._config = { ...config, family, slots, prefix, template, days, fontSize, title };
+    if (!this.shadowRoot) {
+      this.attachShadow({ mode: "open" });
+    }
+
     this._pending = {}; // entity_id -> { kind: "time"|"number", value }
     this._applying = false;
     this._applyError = "";
+    this._currentFamily = String(config.family || "hc1").toLowerCase();
+    this._initFamily(this._currentFamily);
+  }
+
+  // (Re)computes every family-dependent entity mapping and rebuilds the DOM
+  // for that family. Called on initial setConfig and whenever the in-card
+  // dropdown switches families.
+  _initFamily(family) {
+    this._currentFamily = family;
+    this._title = this._userTitle || FAMILY_TITLES[family] || "THZ Schedule";
 
     // ---- time fields: entity_id -> { day, slot, part } ----
     this._timeMeta = {};
-    for (const d of days) {
-      for (let s = 0; s < slots; s++) {
+    for (const d of this._days) {
+      for (let s = 0; s < this._slots; s++) {
         for (const part of ["start", "end"]) {
-          const id = this._entityIdFor(d.key, s, part);
+          const id = this._entityIdFor(family, d.key, s, part);
           this._timeMeta[id] = { day: d.key, slot: s, part };
         }
       }
     }
 
     // ---- setpoint fields ----
+    // Config-level `entities` overrides only apply to the family named in
+    // YAML; switching to a different family via the dropdown falls back to
+    // the default naming for that family.
+    const isConfiguredFamily = family === String(this._rawConfig.family || "hc1").toLowerCase();
+    const setpointOverrides = isConfiguredFamily ? this._rawConfig.entities || {} : {};
     const setpointDefs = FAMILY_SETPOINTS[family] || [];
     this._setpoints = setpointDefs.map((def) => ({
       ...def,
       entityId:
         setpointOverrides[def.key] ||
-        `number.${prefix ? prefix + "_" : ""}${slugify(def.base)}`,
+        `number.${this._prefix ? this._prefix + "_" : ""}${slugify(def.base)}`,
     }));
 
-    if (!this.shadowRoot) {
-      this.attachShadow({ mode: "open" });
-    }
+    this._pending = {};
+    this._applying = false;
+    this._applyError = "";
+    this._liveValues = {};
+    this._numMeta = {};
+
     this._buildStaticDom();
     if (this._hass) this._syncAll();
   }
 
-  _entityIdFor(day, slot, part) {
-    return this._config.template
-      .replaceAll("{prefix}", this._config.prefix)
-      .replaceAll("{family}", this._config.family)
+  _entityIdFor(family, day, slot, part) {
+    return this._template
+      .replaceAll("{prefix}", this._prefix)
+      .replaceAll("{family}", family)
       .replaceAll("{day}", day)
       .replaceAll("{slot}", String(slot))
       .replaceAll("{part}", part);
@@ -149,13 +176,23 @@ class ThzScheduleCard extends HTMLElement {
   }
 
   getCardSize() {
-    return 3 + this._config.days.length;
+    return 3 + this._days.length;
   }
 
-  // ---- static DOM (built once per setConfig call) ----
+  // ---- static DOM (rebuilt whenever the family changes) ----
 
   _buildStaticDom() {
-    const { days, slots, fontSize, title } = this._config;
+    const { _slots: slots, _days: days, _fontSize: fontSize, _title: title } = this;
+
+    let familyOptions = "";
+    for (const fam of SWITCHABLE_FAMILIES) {
+      familyOptions += `<option value="${fam}"${fam === this._currentFamily ? " selected" : ""}>${FAMILY_TITLES[fam]}</option>`;
+    }
+    // If configured with a family outside the switcher's list (e.g. hc2),
+    // keep it selectable so the dropdown always reflects reality.
+    if (!SWITCHABLE_FAMILIES.includes(this._currentFamily)) {
+      familyOptions += `<option value="${this._currentFamily}" selected>${FAMILY_TITLES[this._currentFamily] || this._currentFamily}</option>`;
+    }
 
     let setpointCells = "";
     for (const sp of this._setpoints) {
@@ -171,8 +208,12 @@ class ThzScheduleCard extends HTMLElement {
         </div>`;
     }
 
-    let headRow2 = "";
+    // headRow1 groups two columns per slot under "Slot N"; headRow2 labels
+    // each of those two columns "Start"/"End". Both rows need the SAME
+    // leading blank cell for the day-name column, or the Start/End labels
+    // in row 2 end up shifted one column left of the data they describe.
     let headRow1 = `<th class="daycol"></th>`;
+    let headRow2 = `<th class="daycol"></th>`;
     for (let s = 0; s < slots; s++) {
       headRow1 += `<th class="slothead" colspan="2">Slot ${s + 1}</th>`;
       headRow2 += `<th class="subhead">Start</th><th class="subhead">End</th>`;
@@ -183,7 +224,7 @@ class ThzScheduleCard extends HTMLElement {
       let cells = `<td class="daycol">${d.label}</td>`;
       for (let s = 0; s < slots; s++) {
         for (const part of ["start", "end"]) {
-          const id = this._entityIdFor(d.key, s, part);
+          const id = this._entityIdFor(this._currentFamily, d.key, s, part);
           cells += `
             <td class="timecell" data-entity="${id}">
               <input type="time" data-entity="${id}" data-kind="time"
@@ -199,9 +240,18 @@ class ThzScheduleCard extends HTMLElement {
       <style>
         :host { --sc-font-size: ${fontSize}px; }
         ha-card { padding: 16px 16px 10px; font-size: var(--sc-font-size); }
-        .head h1 { font-size: 1.25em; font-weight: 600; margin: 0 0 2px; color: var(--primary-text-color); }
+        .head {
+          display: flex; align-items: center; justify-content: space-between;
+          gap: 12px; flex-wrap: wrap; margin-bottom: 2px;
+        }
+        .head h1 { font-size: 1.25em; font-weight: 600; margin: 0; color: var(--primary-text-color); }
+        .family-select {
+          padding: 4px 8px; border-radius: 6px; font-size: 0.85em;
+          border: 1px solid var(--divider-color); background: var(--card-background-color);
+          color: var(--primary-text-color); font-family: inherit;
+        }
         .hint {
-          font-size: 0.85em; color: var(--secondary-text-color); margin-bottom: 10px;
+          font-size: 0.85em; color: var(--secondary-text-color); margin: 6px 0 10px;
           line-height: 1.4;
         }
         .missing-banner {
@@ -286,7 +336,10 @@ class ThzScheduleCard extends HTMLElement {
         .btn-apply:disabled { opacity: 0.6; cursor: not-allowed; }
       </style>
       <ha-card>
-        <div class="head"><h1>${title}</h1></div>
+        <div class="head">
+          <h1>${title}</h1>
+          <select class="family-select" aria-label="Program family">${familyOptions}</select>
+        </div>
         <div class="hint">
           Each slot is a <b>comfort</b> window; time outside every slot falls back to
           <b>setback</b> automatically, using the Night setpoint below. Set a start time
@@ -342,9 +395,22 @@ class ThzScheduleCard extends HTMLElement {
     this._applyBtn = this.shadowRoot.querySelector(".btn-apply");
     this.shadowRoot.querySelector(".btn-discard").addEventListener("click", () => this._onDiscard());
     this._applyBtn.addEventListener("click", () => this._onApply());
+    this._familySelect = this.shadowRoot.querySelector(".family-select");
+    this._familySelect.addEventListener("change", (ev) => this._onFamilyChange(ev.target.value));
+  }
 
-    this._liveValues = {}; // entity_id -> displayed string, as last known from hass
-    this._numMeta = {}; // entity_id -> { min, max, step, unit }
+  // ---- family switching ----
+
+  _onFamilyChange(newFamily) {
+    if (Object.keys(this._pending).length > 0) {
+      // Don't silently discard in-progress edits -- send the dropdown back
+      // to the family that's actually showing, and explain why.
+      this._familySelect.value = this._currentFamily;
+      this._applyError = "Apply or Discard your pending changes before switching schedules.";
+      this._syncApplyBar();
+      return;
+    }
+    this._initFamily(newFamily);
   }
 
   // ---- hass -> DOM sync ----
@@ -404,10 +470,10 @@ class ThzScheduleCard extends HTMLElement {
     if (missing > 0) {
       this._missingBanner.style.display = "block";
       this._missingBanner.textContent =
-        `${missing} of ${total} entities for "${this._config.family}" were not found. ` +
+        `${missing} of ${total} entities for "${this._currentFamily}" were not found. ` +
         `They're likely disabled by default -- set "Entity visibility" to Extended or All in the ` +
         `lwz-thz-403 integration's options, then enable the remaining ones under ` +
-        `Settings → Devices & services → Entities (search "program_${this._config.family}" or the ` +
+        `Settings → Devices & services → Entities (search "program_${this._currentFamily}" or the ` +
         `family's setpoint names).`;
     } else {
       this._missingBanner.style.display = "none";

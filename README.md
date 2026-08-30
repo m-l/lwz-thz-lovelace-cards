@@ -189,13 +189,20 @@ title: HC1 Heating Schedule
 family: hc1
 ```
 
-`family` selects the program group: `hc1` (default), `hc2`, `dhw`, or
-`fan`. Typing a time or a setpoint only stages the change (the field
-outlines and a small "was ..." note appears below it) — nothing is sent
-until you click **Apply**, which lists how many fields changed across both
-the schedule grid and the setpoints row; **Discard** reverts everything
-back to the live values. A setpoint typed outside its entity's `min`/`max`
-is clamped when you click Apply, same as the heating curve card.
+`family` just sets which program group the card *opens* on — `hc1`
+(default), `hc2`, `dhw`, or `fan`. A dropdown in the card's own header lets
+you switch between HC1/DHW/Fan afterwards without touching the dashboard
+YAML (HC2 isn't in that dropdown, matching the integration's own default
+scope, but `family: hc2` still works if you set it directly). If you have
+pending, un-applied edits, switching is blocked with an explanation instead
+of silently discarding them — apply or discard first.
+
+Typing a time or a setpoint only stages the change (the field outlines and
+a small "was ..." note appears below it) — nothing is sent until you click
+**Apply**, which lists how many fields changed across both the schedule
+grid and the setpoints row; **Discard** reverts everything back to the live
+values. A setpoint typed outside its entity's `min`/`max` is clamped when
+you click Apply, same as the heating curve card.
 
 ```yaml
 type: custom:thz-schedule-card
