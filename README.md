@@ -288,10 +288,15 @@ entities:
 
 ### Clearing a slot to "unset"
 
-Each time field has a small **✕** button next to it. Clicking it stages an
-explicit "clear this slot" edit — shown the same way as a typed change,
-sent only once you click Apply — that sets the slot back to the device's
-own "unset" state, the same as clearing it from the heat pump's own menu.
+Each time field has a small **✕** button next to it. Clicking it on either
+the Start or the End of a slot stages clearing **the whole slot** — both
+halves together, shown the same way as a typed change, sent only once you
+click Apply — back to the device's own "unset" state, the same as clearing
+it from the heat pump's own menu. A slot only means something as a
+Start+End pair, so an "unset" start with a real end (or vice versa)
+wouldn't describe anything — clicking ✕ once takes care of both. If the
+other half's entity happens not to exist at all, only the one you clicked
+is staged.
 
 This goes through a dedicated `thz.clear_value` service rather than Home
 Assistant's built-in `time.set_value`, since that service's schema
@@ -300,11 +305,11 @@ requires a real time value and has no way to express "no time set" at all.
 (it's what provides the service); update the integration via HACS if
 clicking ✕ fails with a "service not found" error.
 
-Typing an actual time into a field always overrides a staged Clear —
-whichever you did most recently for that field is what Apply sends. A
-field left blank by *typing* (rather than clicking ✕) is still rejected
-with an error asking you to use the Clear button instead, since a blank
-value is ambiguous about what you actually meant.
+Typing an actual time into one of the two fields afterwards overrides only
+that field's staged Clear — the other half stays staged if you haven't
+touched it. A field left blank by *typing* (rather than clicking ✕) is
+still rejected with an error asking you to use the Clear button instead,
+since a blank value is ambiguous about what you actually meant.
 
 ## Credit
 

@@ -19,11 +19,13 @@
 // "Apply"; "Discard" reverts all pending edits, whether they're times or
 // setpoints.
 //
-// Each time field also has a small "x" button to clear it back to the
-// device's own "unset" state (equivalent to clearing that slot from the
-// heat pump's own menu). This goes through a dedicated `thz.clear_value`
-// service rather than `time.set_value`, since Home Assistant's built-in
-// service has no way to represent "no time" -- see README.
+// Each time field also has a small "x" button to clear its whole slot
+// (both Start and End) back to the device's own "unset" state (equivalent
+// to clearing that slot from the heat pump's own menu) -- a slot only
+// makes sense as a Start+End pair, so clearing one half also clears the
+// other. This goes through a dedicated `thz.clear_value` service rather
+// than `time.set_value`, since Home Assistant's built-in service has no
+// way to represent "no time" -- see README.
 
 const DAY_DEFS = [
   { key: "mo", label: "Mon" },
@@ -386,8 +388,8 @@ class ThzScheduleCard extends HTMLElement {
           <b>setback</b> automatically, using the Night setpoint below. Set a start time
           later than its end time (e.g. 20:00&nbsp;&rarr;&nbsp;02:00) to span midnight --
           supported natively by the device. Typing a value only stages the change; click
-          Apply to send it. Use the <b>✕</b> next to a time field to clear it back to
-          "unset" instead of typing a time.
+          Apply to send it. Use the <b>✕</b> next to a time field to clear that whole
+          slot (both Start and End) back to "unset" instead of typing a time.
         </div>
         <div class="missing-banner" style="display:none;"></div>
         <div class="setpoints">${setpointCells}</div>
@@ -561,13 +563,31 @@ class ThzScheduleCard extends HTMLElement {
   // Stages an explicit "clear this field to the device's unset state"
   // edit, distinct from a normal typed value -- see _onApply for how the
   // two are sent differently (thz.clear_value vs time.set_value).
+  //
+  // A slot only makes sense as a Start+End pair -- an "unset" start with a
+  // real end (or vice versa) doesn't describe anything meaningful -- so
+  // clicking Clear on either half stages clearing BOTH halves of that same
+  // slot together. If the other half's entity happens to be missing (not
+  // found in hass.states), only the clicked field is staged.
   _onClearClick(id) {
     if (this._inputs[id].disabled) return;
-    this._pending[id] = { kind: "time-clear", value: "" };
-    this._inputs[id].value = "";
-    this._inputs[id].classList.add("dirty");
-    this._clearBtns[id].classList.add("dirty");
-    this._liveNotes[id].textContent = this._liveValues[id] ? `was ${this._liveValues[id]}` : "was unset";
+
+    const meta = this._timeMeta[id];
+    const otherPart = meta.part === "start" ? "end" : "start";
+    const pairId = this._entityIdFor(this._currentFamily, meta.day, meta.slot, otherPart);
+
+    const ids = [id];
+    if (this._inputs[pairId] && !this._inputs[pairId].disabled) {
+      ids.push(pairId);
+    }
+
+    for (const fid of ids) {
+      this._pending[fid] = { kind: "time-clear", value: "" };
+      this._inputs[fid].value = "";
+      this._inputs[fid].classList.add("dirty");
+      if (this._clearBtns[fid]) this._clearBtns[fid].classList.add("dirty");
+      this._liveNotes[fid].textContent = this._liveValues[fid] ? `was ${this._liveValues[fid]}` : "was unset";
+    }
     this._syncApplyBar();
   }
 
